@@ -9,12 +9,9 @@ import mlflow
 from mlflow.models import infer_signature
 import joblib
 
-def scale_frame(frame):
-
-    df = frame.copy()
-    # Все столбцы, кроме целевой (Weight), считаем признаками
-    X = df.drop(columns=['Weight'])
-    y = df['Weight']
+def scale_frame(df):
+    X = df.drop(columns=['mpg'])
+    y = df['mpg']
     scaler = StandardScaler()
     power_trans = PowerTransformer()
     X_scaled = scaler.fit_transform(X.values)
@@ -27,17 +24,16 @@ def eval_metrics(actual, pred):
     r2 = r2_score(actual, pred)
     return rmse, mae, r2
 
-def train(**context):
-    """Обучение модели
-    ti = context['ti']
-    input_path = ti.xcom_pull(task_ids='clear_data')
-    df = pd.read_csv(input_path)
-
-    # Масштабируем
+def train():
+    AIRFLOW_HOME = os.environ.get('AIRFLOW_HOME', os.path.expanduser('~/airflow'))
+    clean_path = os.path.join(AIRFLOW_HOME, 'data', 'mpg_clear.csv')
+    model_path = os.path.join(AIRFLOW_HOME, 'models', 'mpg_model.pkl')
+    
+    df = pd.read_csv(clean_path)
+    
     X, y, power_trans = scale_frame(df)
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.3, random_state=42)
 
-    # Гиперпараметры для перебора
     params = {
         'alpha': [0.0001, 0.001, 0.01, 0.05, 0.1],
         'l1_ratio': [0.001, 0.05, 0.01, 0.2],
@@ -46,8 +42,7 @@ def train(**context):
         "fit_intercept": [False, True],
     }
 
-    # Устанавливаем эксперимент MLflow
-    mlflow.set_experiment("fish_weight_prediction")
+    mlflow.set_experiment("mpg_prediction")
 
     with mlflow.start_run():
         lr = SGDRegressor(random_state=42)
@@ -55,14 +50,19 @@ def train(**context):
         clf.fit(X_train, y_train.reshape(-1))
         best = clf.best_estimator_
 
-        # Предсказание на валидации
         y_pred_scaled = best.predict(X_val)
         y_pred = power_trans.inverse_transform(y_pred_scaled.reshape(-1, 1))
         y_val_orig = power_trans.inverse_transform(y_val)
 
         rmse, mae, r2 = eval_metrics(y_val_orig, y_pred)
 
-        # Логирование параметров
+        print("\n" + "="*50)
+        print("РЕЗУЛЬТАТЫ ОБУЧЕНИЯ МОДЕЛИ:")
+        print(f"RMSE: {rmse:.4f}")
+        print(f"MAE: {mae:.4f}")
+        print(f"R2: {r2:.4f}")
+        print("="*50 + "\n")
+
         mlflow.log_param("alpha", best.alpha)
         mlflow.log_param("l1_ratio", best.l1_ratio)
         mlflow.log_param("penalty", best.penalty)
@@ -72,12 +72,9 @@ def train(**context):
         mlflow.log_metric("r2", r2)
         mlflow.log_metric("mae", mae)
 
-        # Сохраняем модель через MLflow
         signature = infer_signature(X_train, best.predict(X_train))
         mlflow.sklearn.log_model(best, "model", signature=signature)
 
-        # Дополнительно сохраняем pickle в папку models
-        model_path = os.path.join(os.environ['AIRFLOW_HOME'], 'models', 'fish_model.pkl')
         with open(model_path, "wb") as f:
             joblib.dump(best, f)
         print(f"Model saved to {model_path}")
